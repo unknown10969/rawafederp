@@ -1,0 +1,44 @@
+# Build and validate on every push/PR so deploys (e.g. Hostinger Git) only get working code
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: "file:./prisma/dev.db"
+
+      - name: Create database tables
+        run: npx prisma db push --accept-data-loss
+        env:
+          DATABASE_URL: "file:./prisma/dev.db"
+        continue-on-error: true
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+        env:
+          DATABASE_URL: "file:./prisma/dev.db"
+          NEXTAUTH_SECRET: "ci-build-secret"
+          NEXTAUTH_URL: "http://localhost:3000"

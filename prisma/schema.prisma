@@ -1,0 +1,266 @@
+// Manufacturing ERP - SQLite (single file, Hostinger-friendly)
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Products: raw materials and finished goods in inventory
+model Product {
+  id                String   @id @default(cuid())
+  name              String
+  sku               String   @unique
+  type              String   // "raw" | "finished"
+  quantity          Float    @default(0)
+  unit              String   @default("pcs") // pcs, kg, L, etc.
+  averageCost       Float    @default(0)    // Updated when Purchase is logged
+  lowStockThreshold Float    @default(0)    // Below this = Low Stock (red badge)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  purchases     Purchase[]
+  sales         Sale[]
+  bomAsOutput   BOM[]           @relation("BOMOutput")
+  bomItems      BOMItem[]       // When this product is an input in a recipe
+  lowStockAlerts LowStockAlert[]
+}
+
+// Supplier: vendors who supply raw materials
+model Supplier {
+  id              String    @id @default(cuid())
+  name            String
+  contactPerson   String?
+  phone           String?
+  email           String?
+  address         String?
+  productsSupplied String?  // Description of products they supply
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  purchases       Purchase[]
+
+  @@index([name])
+}
+
+// Customer: clients who purchase finished goods
+model Customer {
+  id              String    @id @default(cuid())
+  name            String
+  phone           String?
+  email           String?
+  address         String?
+  totalOrders     Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sales           Sale[]
+
+  @@index([name])
+}
+
+// Purchase: when we buy materials → auto-updates Product.averageCost
+model Purchase {
+  id         String   @id @default(cuid())
+  productId  String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplierId String?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+  quantity   Float
+  unitPrice  Float    // Cost per unit at purchase time
+  totalAmount Float   // quantity * unitPrice (stored for reporting)
+  purchasedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id])
+
+  @@index([productId])
+  @@index([supplierId])
+  @@index([purchasedAt])
+  @@index([createdById])
+}
+
+// Sale: for revenue calculation on Dashboard
+model Sale {
+  id          String   @id @default(cuid())
+  productId   String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  customerId String?
+  customer    Customer? @relation(fields: [customerId], references: [id])
+  quantity    Float
+  unitPrice   Float
+  totalAmount Float
+  soldAt      DateTime @default(now())
+  createdAt   DateTime @default(now())
+  createdById String?
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+
+  @@index([productId])
+  @@index([customerId])
+  @@index([soldAt])
+  @@index([createdById])
+}
+
+// Expense: other costs (utilities, labor, etc.) for Dashboard
+model Expense {
+  id          String   @id @default(cuid())
+  description String
+  amount      Float
+  category    String?  // e.g. "utilities", "labor", "shipping"
+  expenseAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+  createdById String?
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+
+  @@index([expenseAt])
+  @@index([createdById])
+}
+
+// BOM: recipe definition (output = finished good)
+model BOM {
+  id              String   @id @default(cuid())
+  name            String   // Recipe name
+  outputProductId String
+  outputProduct   Product  @relation("BOMOutput", fields: [outputProductId], references: [id], onDelete: Cascade)
+  outputQuantity  Float    // How many units of finished good per batch
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  items          BOMItem[]
+  productionRuns ProductionRun[]
+  workOrders     WorkOrder[]
+
+  @@index([outputProductId])
+}
+
+// BOMItem: one raw material line in a recipe
+model BOMItem {
+  id               String @id @default(cuid())
+  bomId            String
+  bom              BOM    @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantityRequired Float  // Units of this material per batch
+
+  @@unique([bomId, productId])
+  @@index([bomId])
+  @@index([productId])
+}
+
+// WorkOrder: planned production orders before execution
+model WorkOrder {
+  id              String   @id @default(cuid())
+  recipeId        String   // BOM ID
+  bom             BOM      @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  status          String   @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED
+  scheduledDate   DateTime
+  quantityToProduce Float
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdById     String?
+  createdBy       User?    @relation(fields: [createdById], references: [id])
+
+  @@index([recipeId])
+  @@index([status])
+  @@index([scheduledDate])
+  @@index([createdById])
+}
+
+// ProductionRun: when user clicks "Produce" → subtract inputs, add output
+model ProductionRun {
+  id              String   @id @default(cuid())
+  bomId           String
+  bom             BOM     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  quantityProduced Float  // Number of batches produced
+  wasteQuantity   Float   @default(0) // Material loss/scrap during manufacturing
+  producedAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
+  createdById     String?
+  createdBy       User?   @relation(fields: [createdById], references: [id])
+
+  @@index([bomId])
+  @@index([producedAt])
+  @@index([createdById])
+}
+
+// User: authentication and authorization
+model User {
+  id            String   @id @default(cuid())
+  username      String   @unique
+  passwordHash  String   // bcrypt hash
+  fullName      String?
+  email         String?
+  isActive      Boolean  @default(true)
+  roleId        String?
+  role          Role?    @relation(fields: [roleId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastLoginAt   DateTime?
+
+  purchases     Purchase[]
+  sales         Sale[]
+  expenses      Expense[]
+  productionRuns ProductionRun[]
+  workOrders    WorkOrder[]
+  lowStockAlerts LowStockAlert[]
+
+  @@index([username])
+  @@index([roleId])
+}
+
+// Role: defines what users can do
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  permissions RolePermission[]
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+}
+
+// Permission: granular access control
+model Permission {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g., "inventory.view", "inventory.edit", "production.produce"
+  description String?
+  roles       RolePermission[]
+  createdAt   DateTime @default(now())
+
+  @@index([name])
+}
+
+// RolePermission: many-to-many between Role and Permission
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  role         Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+// LowStockAlert: tracks when products fall below threshold
+model LowStockAlert {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  currentQty  Float
+  threshold   Float
+  isResolved  Boolean  @default(false)
+  resolvedAt  DateTime?
+  resolvedById String?
+  resolvedBy  User?    @relation(fields: [resolvedById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+  @@index([isResolved])
+  @@index([createdAt])
+}
